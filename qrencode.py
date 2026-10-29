@@ -6,9 +6,11 @@
     python qrencode.py report.pdf --color -p      # start in colour mode, password protected
     echo "secret note" | python qrencode.py - -p  # encode text from stdin
 
-Output: <name>_qr/viewer.html. Open it full screen; the bar on top switches the layout
-(1, 2, 6 or 12 codes per page), colour and speed while you scan, without losing progress.
-Add --png to also write the pages as page_NNNN.png images.
+Nothing is written to disk: the slideshow is built in memory and served only to this
+computer (127.0.0.1) for a private browser window. Press Ctrl+C when you are done.
+The bar on top of the slideshow switches the layout (1, 2, 6 or 12 codes per page),
+colour and speed while you scan, without losing progress.
+Add -o FOLDER to save viewer.html (and --png page images) instead.
 Decode with the web scanner (web/) or qrdecode.py. Format: FORMAT.md.
 
 Requires: pip install segno pillow numpy cryptography zstandard
@@ -18,11 +20,17 @@ import base64
 import getpass
 import hashlib
 import html
+import http.server
 import io
 import math
 import os
+import secrets
+import shutil
 import struct
+import subprocess
 import sys
+import threading
+import time
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -467,6 +475,90 @@ def layout_choice(cols: int, rows: int) -> int:
     return 1 if n <= 1 else 2 if n <= 2 else 6 if n <= 6 else 12
 
 
+# ---------------------------------------------------------------- memory-only serving
+
+
+class MemoryServer:
+    """Serves one page from memory on 127.0.0.1 only, at an unguessable path, and tells the browser not to store it."""
+
+    def __init__(self, page: bytes):
+        self.token = secrets.token_urlsafe(16)
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                host_ok = self.headers.get("Host", "") in outer.hosts  # blocks DNS-rebinding from web pages
+                if self.path.split("?")[0] != "/" + outer.token or not host_ok:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(page)))
+                self.send_header("Cache-Control", "no-store, max-age=0")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Referrer-Policy", "no-referrer")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Content-Security-Policy",
+                                 "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                                 "img-src data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'")
+                self.end_headers()
+                self.wfile.write(page)
+
+            def log_message(self, *args):  # no access log
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd.daemon_threads = True
+        port = self.httpd.server_port
+        self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        self.url = f"http://127.0.0.1:{port}/{self.token}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+_PRIVATE_BROWSERS = (
+    (("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome", "brave-browser"), "--incognito"),
+    (("microsoft-edge", "microsoft-edge-stable", "msedge"), "--inprivate"),
+    (("firefox",), "--private-window"),
+)
+_BROWSER_PATHS = (
+    ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "--incognito"),
+    ("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", "--incognito"),
+    ("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", "--inprivate"),
+    ("/Applications/Firefox.app/Contents/MacOS/firefox", "--private-window"),
+    (r"C:\Program Files\Google\Chrome\Application\chrome.exe", "--incognito"),
+    (r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe", "--incognito"),
+    (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "--inprivate"),
+    (r"C:\Program Files\Mozilla Firefox\firefox.exe", "--private-window"),
+)
+
+
+def private_browser_command(url: str, which=shutil.which, exists=os.path.exists) -> list | None:
+    """Command that opens `url` in a private / incognito window of an installed browser, if there is one."""
+    for names, flag in _PRIVATE_BROWSERS:
+        for name in names:
+            if exe := which(name):
+                return [exe, flag, url]
+    for path, flag in _BROWSER_PATHS:
+        if exists(path):
+            return [path, flag, url]
+    return None
+
+
+def open_private(url: str) -> bool:
+    cmd = private_browser_command(url)
+    if cmd is None:
+        return False
+    subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    return True
+
+
 # ---------------------------------------------------------------- CLI
 
 
@@ -481,10 +573,11 @@ def ask_password() -> str:
             print("passwords differ, try again", file=sys.stderr)
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(description="Encode a file into a slideshow of QR codes for scanning with a phone.")
+def main(argv=None, on_ready=None, stop_event=None):
+    p = argparse.ArgumentParser(description="Encode a file into a slideshow of QR codes for scanning with a phone. "
+                                            "By default nothing is written to disk.")
     p.add_argument("file", help="file to encode, or - to read from stdin")
-    p.add_argument("-o", "--out", help="output folder (default: <name>_qr)")
+    p.add_argument("-o", "--out", help="save viewer.html to this folder instead of showing it from memory")
     p.add_argument("-p", "--password", action="store_true", help="encrypt; asks for a password")
     p.add_argument("--live", action="store_true", help="bigger codes for scanning the slideshow live (default: photo)")
     p.add_argument("--color", action="store_true", help="start the slideshow in colour mode (3x data per page)")
@@ -495,10 +588,14 @@ def main(argv=None):
     p.add_argument("--ecc", choices="LMQH", help="QR error-correction level")
     p.add_argument("--redundancy", type=float, default=0.3, help="extra repair codes, as a fraction of data codes")
     p.add_argument("--interval", type=int, help="start with this many milliseconds per page")
-    p.add_argument("--png", action="store_true", help="also write the pages as images (page_NNNN.png)")
+    p.add_argument("--no-browser", action="store_true", help="only print the address; open it in a private window yourself")
+    p.add_argument("--timeout", type=float, default=30, help="stop serving after this many minutes (default 30)")
+    p.add_argument("--png", action="store_true", help="with -o: also write the pages as images (page_NNNN.png)")
     p.add_argument("--width", type=int, default=1920, help="page width in pixels for --png")
     p.add_argument("--height", type=int, default=1080, help="page height in pixels for --png")
     a = p.parse_args(argv)
+    if a.png and not a.out:
+        p.error("--png writes files, so it needs -o FOLDER")
 
     if a.file == "-":
         data, name = sys.stdin.buffer.read(), a.name or "message.txt"
@@ -512,24 +609,52 @@ def main(argv=None):
         if val is not None:
             preset[key] = val
     layout = Layout(a.width, a.height, color=a.color, **preset)
+    print("encoding in memory" + ("" if a.out else "; nothing is written to disk") + "...", file=sys.stderr)
     pk = build_packets(data, name, layout.version, layout.ecc, a.redundancy, password, multiple=PACKET_MULTIPLE)
-
-    out = Path(a.out or f"{Path(name).stem}_qr")
-    out.mkdir(parents=True, exist_ok=True)
     interval = a.interval or (400 if a.live else 1500)
-    (out / "viewer.html").write_text(
-        viewer_html(pk, layout_choice(layout.cols, layout.rows), a.color, 1000 / interval, f"qrtransfer: {name}"))
-    if a.png:
-        for old in out.glob("page_*.png"):
-            old.unlink()
-        for i, page in enumerate(render_pages(pk, layout, password is not None), 1):
-            page.save(out / f"page_{i:04d}.png", optimize=True)
-
+    page = viewer_html(pk, layout_choice(layout.cols, layout.rows), a.color, 1000 / interval, f"qrtransfer: {name}")
     enc = ", encrypted" if password else ""
     print(f"{name}: {pk.original_size} B -> {pk.stream_size} B ({pk.method}{enc})")
     print(f"{pk.k} data codes + {pk.total - pk.k} repair codes of {pk.block_size} B; "
           f"any {pk.k} (+ a couple) rebuild the file")
-    print(f"open {out / 'viewer.html'} full screen and scan it; the bar on top switches layout, colour and speed")
+
+    if a.out:  # explicit opt-in to leave files behind
+        out = Path(a.out)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "viewer.html").write_text(page)
+        if a.png:
+            for old in out.glob("page_*.png"):
+                old.unlink()
+            for i, img in enumerate(render_pages(pk, layout, password is not None), 1):
+                img.save(out / f"page_{i:04d}.png", optimize=True)
+        print(f"saved to {out}/ (this leaves the encoded file on disk); open viewer.html full screen and scan it")
+        return
+
+    # memory-only: drop everything but the page itself, then serve it to this computer only
+    body = page.encode()
+    del data, pk, page, password
+    server = MemoryServer(body)
+    try:
+        print(f"\nslideshow: {server.url}   (reachable from this computer only)")
+        if a.no_browser:
+            print("open that address in a private / incognito window")
+        elif open_private(server.url):
+            print("opened in a private window")
+        else:
+            print("no browser with a private mode found: open the address in a private / incognito window yourself")
+        print(f"press Full screen there and scan it. Close the window and press Ctrl+C here when done "
+              f"(it stops by itself after {a.timeout:g} min)")
+        if on_ready:
+            on_ready(server.url)
+        deadline = time.monotonic() + a.timeout * 60
+        try:
+            while time.monotonic() < deadline and not (stop_event and stop_event.is_set()):
+                time.sleep(0.2)
+        except KeyboardInterrupt:
+            pass
+    finally:
+        server.close()
+    print("stopped; nothing was written to disk")
 
 
 if __name__ == "__main__":

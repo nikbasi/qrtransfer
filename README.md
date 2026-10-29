@@ -31,8 +31,10 @@ qrtransfer report.pdf --color            # start the slideshow in colour mode
 echo "wifi: hunter2" | qrtransfer - -p   # text from stdin
 ```
 
-This writes `<name>_qr/viewer.html`, a single self-contained file (a few
-hundred KB per 100 KB of data). Open it, press **Full screen**, and scan. The bar on
+The slideshow opens in a private browser window, straight from memory:
+**nothing is written to disk**. Press **Full screen** and scan. When you are
+done, close that window and press Ctrl+C in the terminal. (`-o FOLDER` saves
+a `viewer.html` instead, if you do want a file.) The bar on
 top switches, while you scan and without losing progress:
 
 - **layout**: 1, 2, 6 or 12 codes per page (keys `1`-`4`)
@@ -44,6 +46,38 @@ Switching is safe because every layout shows consecutive pieces of the same
 stream, so anything the phone already read still counts. The settings are kept
 in the page address (`viewer.html#layout=6&color=0&speed=2.5`), so you can
 bookmark a favourite. `--png` also writes the pages as images.
+
+### Nothing is left on the computer
+
+By default the encoder only reads your file. It builds the slideshow in
+memory and serves it to the browser from a small web server that
+
+- listens on `127.0.0.1` only, so no other machine can reach it;
+- uses a random, unguessable address and refuses requests with a foreign
+  `Host` header (so a web page can't fetch it behind your back);
+- sends `Cache-Control: no-store`, so the browser doesn't keep a copy in its
+  disk cache, and a content-security-policy that blocks all network requests
+  from the page;
+- is opened in an incognito / private window when Chrome, Brave, Edge or
+  Firefox is installed (otherwise it prints the address for you to open in
+  a private window), and stops by itself after `--timeout` minutes (30).
+
+The tests run the real command under `strace` and fail if the process opens
+anything for writing, creates a directory or renames or deletes a file.
+
+What this can't promise, because it is outside the tool:
+
+- **Swap and hibernation:** the operating system may write memory to disk.
+  Full-disk encryption (FileVault, BitLocker, LUKS) with encrypted swap covers it.
+- **The browser:** close the private window when finished; the page stays in
+  the browser's memory until then.
+- **Your shell:** the command line, including the file name, may be in your
+  shell history. Start the line with a space (bash/zsh with `HISTCONTROL=ignorespace`),
+  or pipe the data in (`cat file | qrtransfer -`).
+- **Python can't wipe memory:** the password and data are dropped as soon as the
+  slideshow is built, but the interpreter doesn't overwrite freed memory.
+- The file name is inside the encrypted part only if you use `-p`; without a
+  password it is readable by anyone who photographs the codes.
 
 Encoding takes roughly 2 minutes per MB (drawing the code patterns). The
 slideshow needs about `size / 390 bytes` codes: 1 MB is ~2,700 codes, about 3
