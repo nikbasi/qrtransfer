@@ -1,0 +1,6 @@
+secret.txt: 10388 B -> 3675 B (zstd, encrypted); 6 codes needed, 12 made, 2 pages
+Password: test1234
+Expected file name: secret.txt
+Expected size: 10388 bytes
+Photos: upload with 'Scan photos' (any subset that has enough codes works).
+Pages / viewer.html: show on a screen and use the live camera.

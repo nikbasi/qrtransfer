@@ -1,0 +1,6 @@
+note.txt: 7088 B -> 2554 B (zstd); 7 codes needed, 12 made, 2 pages
+Password: none
+Expected file name: note.txt
+Expected size: 7088 bytes
+Photos: upload with 'Scan photos' (any subset that has enough codes works).
+Pages / viewer.html: show on a screen and use the live camera.
