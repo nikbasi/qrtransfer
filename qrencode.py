@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """qrencode: turn a file into pages of QR codes that a phone can scan back.
 
-    python qrencode.py report.pdf                 # pages + slideshow for photos
-    python qrencode.py report.pdf --live          # big codes, made for scanning the slideshow live
-    python qrencode.py report.pdf --color -p      # 3x denser colour codes, password protected
+    python qrencode.py report.pdf                 # slideshow for photos
+    python qrencode.py report.pdf --live          # made for scanning the slideshow live
+    python qrencode.py report.pdf --color -p      # start in colour mode, password protected
     echo "secret note" | python qrencode.py - -p  # encode text from stdin
 
-Output: <name>_qr/viewer.html (open full screen) and page_NNNN.png.
+Output: <name>_qr/viewer.html. Open it full screen; the bar on top switches the layout
+(1, 2, 6 or 12 codes per page), colour and speed while you scan, without losing progress.
+Add --png to also write the pages as page_NNNN.png images.
 Decode with the web scanner (web/) or qrdecode.py. Format: FORMAT.md.
 
 Requires: pip install segno pillow numpy cryptography zstandard
@@ -15,13 +17,14 @@ import argparse
 import base64
 import getpass
 import hashlib
+import html
 import io
 import math
 import os
 import struct
 import sys
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -174,14 +177,21 @@ def qr_capacity(version: int, ecc: str) -> int:
     return lo
 
 
+def _matrix(data: bytes, version: int, ecc: str) -> np.ndarray:
+    """Boolean module matrix (True = dark), without quiet zone."""
+    qr = segno.make(data, version=version, error=ecc, mode="byte", boost_error=False)
+    return np.array(qr.matrix, dtype=bool)
+
+
 def _modules(data: bytes, version: int, ecc: str) -> np.ndarray:
     """Boolean module matrix (True = dark) including the quiet zone."""
-    qr = segno.make(data, version=version, error=ecc, mode="byte", boost_error=False)
-    return np.pad(np.array(qr.matrix, dtype=bool), QUIET, constant_values=False)
+    return np.pad(_matrix(data, version, ecc), QUIET, constant_values=False)
 
 
 def _render_slot(payloads: list[bytes], layout: Layout, module_px: int) -> Image.Image:
     layers = [_modules(p, layout.version, layout.ecc) for p in payloads]
+    while layout.color and len(layers) < 3:  # partly filled last slot: missing layers stay light
+        layers.append(np.zeros_like(layers[0]))
     if layout.color:  # channel c is dark where layer c is dark
         img, mode = np.stack([np.where(m, 0, 255) for m in layers], axis=-1).astype(np.uint8), "RGB"
     else:
@@ -198,6 +208,39 @@ def _font(size: int):
 
 
 @dataclass
+class Packets:
+    """The encoded file as QR payloads, independent of how they are laid out on screen."""
+    raw: list
+    method: str
+    original_size: int
+    stream_size: int
+    k: int
+    file_id: bytes
+    block_size: int
+    version: int
+    ecc: str
+
+    @property
+    def total(self) -> int:
+        return len(self.raw)
+
+
+def build_packets(data: bytes, name: str, version: int, ecc: str, redundancy: float = 0.3,
+                  password: str | None = None, multiple: int = 1) -> Packets:
+    """Compress, optionally encrypt, and cut into packets; the count is rounded up to a multiple of `multiple`."""
+    stream, method = pack(data, name, password)
+    file_id = hashlib.sha256(stream).digest()[:4]
+    block_size = qr_capacity(version, ecc) - PACKET_OVERHEAD
+    blocks = split(stream, block_size)
+    k = len(blocks)
+    # data packets first, then repair packets; round up so the last page is full (empty slots are wasted)
+    total = math.ceil((k + max(2, math.ceil(k * redundancy))) / multiple) * multiple
+    raw = [make_packet(file_id, len(stream), block_size, seq, encode_block(blocks, file_id, seq))
+           for seq in range(total)]
+    return Packets(raw, method, len(data), len(stream), k, file_id, block_size, version, ecc)
+
+
+@dataclass
 class EncodeResult:
     pages: list
     method: str
@@ -206,22 +249,11 @@ class EncodeResult:
     k: int
     packets: int
     file_id: bytes
+    raw: list = field(default_factory=list)
+    block_size: int = 0
 
 
-def encode(data: bytes, name: str, layout: Layout, redundancy: float = 0.3,
-           password: str | None = None) -> EncodeResult:
-    stream, method = pack(data, name, password)
-    file_id = hashlib.sha256(stream).digest()[:4]
-    block_size = qr_capacity(layout.version, layout.ecc) - PACKET_OVERHEAD
-    blocks = split(stream, block_size)
-    k = len(blocks)
-
-    # data packets first, then repair packets; fill the last page (empty slots would be wasted)
-    total = k + max(2, math.ceil(k * redundancy))
-    total = math.ceil(total / layout.per_page) * layout.per_page
-    packets = [make_packet(file_id, len(stream), block_size, seq, encode_block(blocks, file_id, seq))
-               for seq in range(total)]
-
+def render_pages(pk: Packets, layout: Layout, encrypted: bool = False) -> list:
     qr_modules = 17 + 4 * layout.version + 2 * QUIET
     caption_h = int(layout.height * 0.045)
     cell_w = layout.width // layout.cols
@@ -231,49 +263,208 @@ def encode(data: bytes, name: str, layout: Layout, redundancy: float = 0.3,
         raise SystemExit("page too small for this grid / QR version: use fewer codes or a lower --qr-version")
 
     font = _font(max(12, int(caption_h * 0.6)))
-    n_pages = total // layout.per_page
+    n_pages = math.ceil(pk.total / layout.per_page)
     per_slot = layout.per_page // layout.slots
     pages = []
     for p in range(n_pages):
         page = Image.new("RGB" if layout.color else "L", (layout.width, layout.height), "white")
-        chunk = packets[p * layout.per_page:(p + 1) * layout.per_page]
+        chunk = pk.raw[p * layout.per_page:(p + 1) * layout.per_page]
         for i in range(layout.slots):
-            qr = _render_slot(chunk[i * per_slot:(i + 1) * per_slot], layout, module_px)
+            payloads = chunk[i * per_slot:(i + 1) * per_slot]
+            if not payloads:
+                break
+            qr = _render_slot(payloads, layout, module_px)
             r, c = divmod(i, layout.cols)
             page.paste(qr, (c * cell_w + (cell_w - qr.width) // 2,
                             caption_h + r * cell_h + (cell_h - qr.height) // 2))
-        lock = "  |  password" if password else ""
-        caption = f"page {p + 1}/{n_pages}  |  any {k}+ codes rebuild the file{lock}  |  id {file_id.hex()}"
+        lock = "  |  password" if encrypted else ""
+        caption = f"page {p + 1}/{n_pages}  |  any {pk.k}+ codes rebuild the file{lock}  |  id {pk.file_id.hex()}"
         ImageDraw.Draw(page).text((layout.width // 2, caption_h // 2), caption, fill="black", font=font, anchor="mm")
         pages.append(page)
+    return pages
 
-    return EncodeResult(pages, method, len(data), len(stream), k, total, file_id)
+
+def encode(data: bytes, name: str, layout: Layout, redundancy: float = 0.3,
+           password: str | None = None) -> EncodeResult:
+    """File -> rendered pages for one fixed layout."""
+    pk = build_packets(data, name, layout.version, layout.ecc, redundancy, password, multiple=layout.per_page)
+    pages = render_pages(pk, layout, password is not None)
+    return EncodeResult(pages, pk.method, pk.original_size, pk.stream_size, pk.k, pk.total, pk.file_id,
+                        pk.raw, pk.block_size)
 
 
-def viewer_html(pages: list, interval_ms: int) -> str:
-    """Self-contained full-screen slideshow (pages embedded), so one file is all you need to open."""
-    urls = []
-    for page in pages:
-        buf = io.BytesIO()
-        page.save(buf, "PNG", optimize=True)
-        urls.append("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
-    pages_js = ",".join(f'"{u}"' for u in urls)
-    return f"""<!doctype html><meta charset="utf-8"><title>qrencode slideshow</title>
+# ---------------------------------------------------------------- slideshow
+
+# Page sizes the slideshow offers: codes per slot-grid cell count. Every size and colour mode shows
+# consecutive packets of the same stream, so switching mid-scan keeps whatever the phone already read.
+SLIDESHOW_LAYOUTS = (1, 2, 6, 12)
+PACKET_MULTIPLE = 36  # divisible by every page size above, times 3 for colour
+
+VIEWER_TEMPLATE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>html,body{{margin:0;height:100%;background:#fff;overflow:hidden;font:14px system-ui}}
-img{{width:100vw;height:100vh;object-fit:contain;image-rendering:pixelated}}
-#hud{{position:fixed;right:8px;bottom:6px;color:#888}}</style>
-<img id="p" alt=""><div id="hud"></div><script>
-const pages=[{pages_js}];let i=0,auto=pages.length>1,ms={interval_ms};
-const img=document.getElementById('p'),hud=document.getElementById('hud');
-const show=()=>{{img.src=pages[i];hud.textContent=(i+1)+'/'+pages.length+(auto?'':' (paused)')+'  space: pause, arrows: step, +/-: speed, click: full screen';}};
-show();let timer=setInterval(tick,ms);function tick(){{if(auto){{i=(i+1)%pages.length;show();}}}}
-addEventListener('keydown',e=>{{
- if(e.key==='ArrowRight')i=(i+1)%pages.length;else if(e.key==='ArrowLeft')i=(i-1+pages.length)%pages.length;
- else if(e.key===' ')auto=!auto;else if(e.key==='+'||e.key==='-'){{ms=Math.max(100,ms*(e.key==='+'?0.8:1.25));clearInterval(timer);timer=setInterval(tick,ms);}}
- else return;show();}});
-addEventListener('click',()=>document.documentElement.requestFullscreen?.());
-</script>"""
+<title>__TITLE__</title>
+<style>
+html,body{margin:0;height:100%;background:#fff;color:#111;font:14px system-ui,-apple-system,sans-serif;overflow:hidden}
+#bar{position:fixed;inset:0 0 auto 0;height:48px;display:flex;align-items:center;gap:6px;padding:0 8px;background:#e9edf1;border-bottom:1px solid #c5ccd3;overflow-x:auto;white-space:nowrap}
+#bar button,#bar select{height:34px;padding:0 10px;font:inherit;border:1px solid #9aa4ae;border-radius:6px;background:#fff;color:#111}
+#bar button.on{background:#1b6ef3;color:#fff;border-color:#1b6ef3}
+#speed{min-width:4.5em;text-align:center}
+#info{margin-left:auto;padding-left:10px;color:#445}
+canvas{position:fixed;left:0;top:48px;width:100vw;height:calc(100vh - 48px);image-rendering:pixelated;display:block}
+body.hide #bar{display:none}
+body.hide canvas{top:0;height:100vh}
+</style></head><body>
+<div id="bar">
+ <select id="layout" aria-label="codes per page">
+  <option value="1">1 code</option><option value="2">2 codes</option><option value="6">6 codes</option><option value="12">12 codes</option>
+ </select>
+ <button id="color" title="3 codes in every spot (red, green, blue): 3x the data per page, slower to decode">Color</button>
+ <button id="slower" aria-label="slower">&minus;</button><span id="speed"></span><button id="faster" aria-label="faster">+</button>
+ <button id="prev" aria-label="previous page">&#9664;</button><button id="play">Pause</button><button id="next" aria-label="next page">&#9654;</button>
+ <button id="full">Full screen</button><button id="hide">Hide bar</button>
+ <span id="info"></span>
+</div>
+<canvas id="c"></canvas>
+<script>
+(() => {
+const V = __V__, N = __N__, BLOCK = __BLOCK__, K = __K__;
+const S = 17 + 4 * V, Q = 4, T = S + 2 * Q, STRIDE = Math.ceil(S * S / 8);
+const bin = atob("__DATA__"), M = new Uint8Array(bin.length);
+for (let i = 0; i < bin.length; i++) M[i] = bin.charCodeAt(i);
+
+const LAYOUTS = { 1: [1, 1], 2: [2, 1], 6: [3, 2], 12: [4, 3] };
+const $ = (id) => document.getElementById(id);
+const canvas = $("c"), ctx = canvas.getContext("2d");
+const st = { layout: __LAYOUT__, color: __COLOR__, speed: __SPEED__, playing: true, cursor: 0, hide: false };
+
+const q = new URLSearchParams(location.hash.slice(1));
+if (LAYOUTS[q.get("layout")]) st.layout = +q.get("layout");
+if (q.has("color")) st.color = q.get("color") === "1";
+if (q.has("speed")) st.speed = Math.min(20, Math.max(0.25, +q.get("speed") || st.speed));
+if (q.get("paused") === "1") st.playing = false;
+if (q.has("at")) st.cursor = Math.max(0, parseInt(q.get("at")) || 0) % N;
+if (q.get("hide") === "1") st.hide = true;
+
+const dims = () => { const [c, r] = LAYOUTS[st.layout]; return innerHeight > innerWidth ? [r, c] : [c, r]; };
+const perPage = () => Math.min(dims()[0] * dims()[1] * (st.color ? 3 : 1), N);
+
+function matrix(p) {
+  const out = new Uint8Array(S * S), base = p * STRIDE;
+  for (let i = 0; i < out.length; i++) out[i] = (M[base + (i >> 3)] >> (7 - (i & 7))) & 1;
+  return out;
+}
+
+function draw() {
+  const dpr = devicePixelRatio || 1;
+  const W = Math.round(canvas.clientWidth * dpr), H = Math.round(canvas.clientHeight * dpr);
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, W, H);
+  const [cols, rows] = dims(), per = st.color ? 3 : 1, P = perPage();
+  const slots = Math.ceil(P / per), cw = Math.floor(W / cols), ch = Math.floor(H / rows);
+  const m = Math.max(1, Math.floor(Math.min(cw, ch) / T));
+  for (let s = 0; s < slots; s++) {
+    const x0 = (s % cols) * cw + Math.floor((cw - T * m) / 2) + Q * m;
+    const y0 = Math.floor(s / cols) * ch + Math.floor((ch - T * m) / 2) + Q * m;
+    const layers = [];
+    for (let l = 0; l < per; l++) layers.push(matrix((st.cursor + s * per + l) % N));
+    // a module's colour: channel l is 0 where layer l is dark, 255 where it is light (white = nothing to draw)
+    const paths = Array.from({ length: 7 }, () => new Path2D());
+    const COLORS = ["#000", "#00f", "#0f0", "#0ff", "#f00", "#f0f", "#ff0"];
+    for (let i = 0, y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++, i++) {
+        const d0 = layers[0][i], d1 = layers[1] ? layers[1][i] : 0, d2 = layers[2] ? layers[2][i] : 0;
+        const c = st.color ? ((d0 ? 0 : 4) | (d1 ? 0 : 2) | (d2 ? 0 : 1)) : (d0 ? 0 : 7);
+        if (c !== 7) paths[c].rect(x0 + x * m, y0 + y * m, m, m);
+      }
+    }
+    for (let c = 0; c < 7; c++) { ctx.fillStyle = COLORS[c]; ctx.fill(paths[c]); }
+  }
+  ui();
+}
+
+function ui() {
+  const P = perPage();
+  $("layout").value = st.layout;
+  $("color").classList.toggle("on", st.color);
+  $("play").textContent = st.playing ? "Pause" : "Play";
+  $("speed").textContent = st.speed.toFixed(st.speed < 10 ? 2 : 1).replace(/\.?0+$/, "") + " pg/s";
+  $("info").textContent = P + " codes/page · " + (P * BLOCK / 1000).toFixed(1) + " KB/page · loop "
+    + (Math.ceil(N / P) / st.speed).toFixed(1) + " s · needs " + K + " of " + N;
+  document.body.classList.toggle("hide", st.hide);
+  const p = new URLSearchParams({ layout: st.layout, color: +st.color, speed: st.speed });
+  if (!st.playing) p.set("paused", "1");
+  if (st.hide) p.set("hide", "1");
+  try { history.replaceState(null, "", "#" + p); } catch (e) { /* file:// in some browsers */ }
+}
+
+let timer = null;
+function schedule() {
+  clearTimeout(timer);
+  if (st.playing) timer = setTimeout(() => { step(1); schedule(); }, 1000 / st.speed);
+}
+function step(dir) {
+  const P = perPage();
+  st.cursor = ((st.cursor + dir * P) % N + N) % N;
+  draw();
+}
+const change = (fn) => { fn(); draw(); schedule(); };
+const setSpeed = (f) => change(() => { st.speed = Math.min(20, Math.max(0.25, Math.round(st.speed * f * 100) / 100)); });
+const fullscreen = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.());
+
+$("layout").onchange = (e) => change(() => { st.layout = +e.target.value; });
+$("color").onclick = () => change(() => { st.color = !st.color; });
+$("slower").onclick = () => setSpeed(0.8);
+$("faster").onclick = () => setSpeed(1.25);
+$("prev").onclick = () => { step(-1); schedule(); };
+$("next").onclick = () => { step(1); schedule(); };
+$("play").onclick = () => change(() => { st.playing = !st.playing; });
+$("full").onclick = fullscreen;
+$("hide").onclick = () => change(() => { st.hide = true; });
+canvas.onclick = () => change(() => { st.hide = !st.hide; });
+addEventListener("resize", draw);
+addEventListener("keydown", (e) => {
+  const k = e.key;
+  if (k === " ") change(() => { st.playing = !st.playing; });
+  else if (k === "ArrowRight") { step(1); schedule(); }
+  else if (k === "ArrowLeft") { step(-1); schedule(); }
+  else if (k === "+" || k === "=") setSpeed(1.25);
+  else if (k === "-") setSpeed(0.8);
+  else if (k === "c") change(() => { st.color = !st.color; });
+  else if (k === "h") change(() => { st.hide = !st.hide; });
+  else if (k === "f") fullscreen();
+  else if ("1234".includes(k)) change(() => { st.layout = [1, 2, 6, 12][+k - 1]; });
+});
+
+window.qrViewer = { st, draw, step, perPage, N, K, V };  // used by the tests
+draw();
+schedule();
+})();
+</script></body></html>
+"""
+
+
+def viewer_html(pk: Packets, layout: int = 6, color: bool = False, pages_per_s: float = 2.5,
+                title: str = "qrtransfer slideshow") -> str:
+    """One self-contained page that draws the codes itself, so layout, colour and speed switch live."""
+    mats = b"".join(np.packbits(_matrix(p, pk.version, pk.ecc).ravel()).tobytes() for p in pk.raw)
+    return (VIEWER_TEMPLATE
+            .replace("__TITLE__", html.escape(title))
+            .replace("__V__", str(pk.version))
+            .replace("__N__", str(pk.total))
+            .replace("__BLOCK__", str(pk.block_size))
+            .replace("__K__", str(pk.k))
+            .replace("__LAYOUT__", str(layout))
+            .replace("__COLOR__", "true" if color else "false")
+            .replace("__SPEED__", repr(round(pages_per_s, 3)))
+            .replace("__DATA__", base64.b64encode(mats).decode()))
+
+
+def layout_choice(cols: int, rows: int) -> int:
+    """Nearest slideshow page size for a cols x rows grid."""
+    n = cols * rows
+    return 1 if n <= 1 else 2 if n <= 2 else 6 if n <= 6 else 12
 
 
 # ---------------------------------------------------------------- CLI
@@ -291,21 +482,22 @@ def ask_password() -> str:
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description="Encode a file into pages of QR codes for scanning with a phone.")
+    p = argparse.ArgumentParser(description="Encode a file into a slideshow of QR codes for scanning with a phone.")
     p.add_argument("file", help="file to encode, or - to read from stdin")
     p.add_argument("-o", "--out", help="output folder (default: <name>_qr)")
     p.add_argument("-p", "--password", action="store_true", help="encrypt; asks for a password")
-    p.add_argument("--live", action="store_true", help="big codes for scanning the slideshow live (default: photo)")
-    p.add_argument("--color", action="store_true", help="stack 3 QR codes per slot in R/G/B (3x data)")
+    p.add_argument("--live", action="store_true", help="bigger codes for scanning the slideshow live (default: photo)")
+    p.add_argument("--color", action="store_true", help="start the slideshow in colour mode (3x data per page)")
     p.add_argument("--name", help="file name stored in the codes (default: the input name)")
-    p.add_argument("--width", type=int, default=1920)
-    p.add_argument("--height", type=int, default=1080)
-    p.add_argument("--cols", type=int)
-    p.add_argument("--rows", type=int)
-    p.add_argument("--qr-version", type=int, help="1-40; higher = denser codes, harder to scan")
+    p.add_argument("--cols", type=int, help="start with this many columns of codes (the slideshow can change it)")
+    p.add_argument("--rows", type=int, help="start with this many rows of codes")
+    p.add_argument("--qr-version", type=int, help="1-40; higher = denser codes, harder to scan (fixed for the whole file)")
     p.add_argument("--ecc", choices="LMQH", help="QR error-correction level")
     p.add_argument("--redundancy", type=float, default=0.3, help="extra repair codes, as a fraction of data codes")
-    p.add_argument("--interval", type=int, help="slideshow milliseconds per page")
+    p.add_argument("--interval", type=int, help="start with this many milliseconds per page")
+    p.add_argument("--png", action="store_true", help="also write the pages as images (page_NNNN.png)")
+    p.add_argument("--width", type=int, default=1920, help="page width in pixels for --png")
+    p.add_argument("--height", type=int, default=1080, help="page height in pixels for --png")
     a = p.parse_args(argv)
 
     if a.file == "-":
@@ -313,9 +505,6 @@ def main(argv=None):
     else:
         src = Path(a.file)
         data, name = src.read_bytes(), a.name or src.name
-    if a.live and a.color:
-        print("note: colour codes decode ~10x slower per frame, so live scanning is usually faster in "
-              "black and white; colour pays off for photos", file=sys.stderr)
     password = ask_password() if a.password else None
 
     preset = dict(PRESETS["live" if a.live else "photo"])
@@ -323,22 +512,24 @@ def main(argv=None):
         if val is not None:
             preset[key] = val
     layout = Layout(a.width, a.height, color=a.color, **preset)
-    res = encode(data, name, layout, a.redundancy, password)
+    pk = build_packets(data, name, layout.version, layout.ecc, a.redundancy, password, multiple=PACKET_MULTIPLE)
 
     out = Path(a.out or f"{Path(name).stem}_qr")
     out.mkdir(parents=True, exist_ok=True)
-    for old in out.glob("page_*.png"):
-        old.unlink()
-    for i, page in enumerate(res.pages, 1):
-        page.save(out / f"page_{i:04d}.png", optimize=True)
     interval = a.interval or (400 if a.live else 1500)
-    (out / "viewer.html").write_text(viewer_html(res.pages, interval))
+    (out / "viewer.html").write_text(
+        viewer_html(pk, layout_choice(layout.cols, layout.rows), a.color, 1000 / interval, f"qrtransfer: {name}"))
+    if a.png:
+        for old in out.glob("page_*.png"):
+            old.unlink()
+        for i, page in enumerate(render_pages(pk, layout, password is not None), 1):
+            page.save(out / f"page_{i:04d}.png", optimize=True)
 
     enc = ", encrypted" if password else ""
-    print(f"{name}: {res.original_size} B -> {res.stream_size} B ({res.method}{enc})")
-    print(f"{res.k} data codes + {res.packets - res.k} repair codes on {len(res.pages)} page(s); "
-          f"any {res.k} codes (+ a couple) rebuild the file")
-    print(f"open {out / 'viewer.html'} full screen and scan it")
+    print(f"{name}: {pk.original_size} B -> {pk.stream_size} B ({pk.method}{enc})")
+    print(f"{pk.k} data codes + {pk.total - pk.k} repair codes of {pk.block_size} B; "
+          f"any {pk.k} (+ a couple) rebuild the file")
+    print(f"open {out / 'viewer.html'} full screen and scan it; the bar on top switches layout, colour and speed")
 
 
 if __name__ == "__main__":

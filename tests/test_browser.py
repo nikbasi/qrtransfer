@@ -1,4 +1,5 @@
 """End to end in a real browser: qrencode.py pages -> simulated camera -> web/ -> original file."""
+import contextlib
 import functools
 import hashlib
 import http.server
@@ -19,14 +20,23 @@ ROOT = Path(__file__).resolve().parent.parent
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
 
 
-@pytest.fixture(scope="module")
-def server():
+@contextlib.contextmanager
+def serve():
+    """Serve web/ on a free local port."""
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(ROOT / "web"))
     handler.log_message = lambda *a: None
     httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    yield f"http://127.0.0.1:{httpd.server_port}/"
-    httpd.shutdown()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}/"
+    finally:
+        httpd.shutdown()
+
+
+@pytest.fixture(scope="module")
+def server():
+    with serve() as url:
+        yield url
 
 
 def browser(args) -> dict:

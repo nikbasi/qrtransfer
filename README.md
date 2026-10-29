@@ -27,13 +27,28 @@ This gives you a `qrtransfer` command:
 ```
 qrtransfer notes.txt --live              # for live scanning (recommended)
 qrtransfer report.pdf --live -p          # same, asks for a password
-qrtransfer report.pdf --color            # dense colour pages, for taking photos
+qrtransfer report.pdf --color            # start the slideshow in colour mode
 echo "wifi: hunter2" | qrtransfer - -p   # text from stdin
 ```
 
-This writes `<name>_qr/viewer.html`, a single self-contained file. Open it,
-click to go full screen, and scan. In the slideshow: space pauses, the arrow
-keys step through pages, and `+`/`-` change the speed.
+This writes `<name>_qr/viewer.html`, a single self-contained file (a few
+hundred KB per 100 KB of data). Open it, press **Full screen**, and scan. The bar on
+top switches, while you scan and without losing progress:
+
+- **layout**: 1, 2, 6 or 12 codes per page (keys `1`-`4`)
+- **Color**: 3 codes in every spot, one per red/green/blue channel (key `c`)
+- **− / +**: speed in pages per second; **◀ ▶**, **Pause** to step (arrows, space)
+- **Hide bar** or a tap on the codes hides the controls (key `h`)
+
+Switching is safe because every layout shows consecutive pieces of the same
+stream, so anything the phone already read still counts. The settings are kept
+in the page address (`viewer.html#layout=6&color=0&speed=2.5`), so you can
+bookmark a favourite. `--png` also writes the pages as images.
+
+Encoding takes roughly 2 minutes per MB (drawing the code patterns). The
+slideshow needs about `size / 390 bytes` codes: 1 MB is ~2,700 codes, about 3
+minutes at 6 codes every 0.4 s if every code is read first time, longer on a phone
+that misses some.
 
 `qrencode.py` is also a single self-contained script: copy it anywhere, run
 `pip install -r requirements.txt`, and use `python qrencode.py ...` instead.
