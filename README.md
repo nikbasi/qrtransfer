@@ -5,7 +5,7 @@ Send a file from a computer to a phone using only the screen and the camera.
 scanner on the phone and point it at the screen; once enough codes are read,
 you get the original file back, bit for bit.
 
-- **Encoder:** `qrencode.py`, a single Python script. It can optionally
+- **Encoder:** `qrencode.py`, a single Python script (installable on its own, see below). It can optionally
   encrypt the file with a password (AES-256-GCM).
 - **Scanner:** `web/`, a static website (e.g. scan.basiletti.com). Everything
   is decoded on the phone and nothing is uploaded. It works offline once
@@ -15,23 +15,36 @@ you get the original file back, bit for bit.
 
 ## Encode
 
-```
-pip install -r requirements.txt
+Install only the encoder (5 small packages; nothing from the website, the desktop decoder or the tests):
 
-python qrencode.py notes.txt --live            # for live scanning (recommended)
-python qrencode.py report.pdf --live -p        # same, asks for a password
-python qrencode.py report.pdf --color          # dense colour pages, for taking photos
-echo "wifi: hunter2" | python qrencode.py - -p # text from stdin
+```
+pip install "git+https://github.com/nikbasi/qrtransfer"     # or: pipx install "git+https://..."
+# if the repo is private: git clone https://github.com/nikbasi/qrtransfer && pip install ./qrtransfer
+```
+
+This gives you a `qrtransfer` command:
+
+```
+qrtransfer notes.txt --live              # for live scanning (recommended)
+qrtransfer report.pdf --live -p          # same, asks for a password
+qrtransfer report.pdf --color            # dense colour pages, for taking photos
+echo "wifi: hunter2" | qrtransfer - -p   # text from stdin
 ```
 
 This writes `<name>_qr/viewer.html`, a single self-contained file. Open it,
 click to go full screen, and scan. In the slideshow: space pauses, the arrow
 keys step through pages, and `+`/`-` change the speed.
 
+`qrencode.py` is also a single self-contained script: copy it anywhere, run
+`pip install -r requirements.txt`, and use `python qrencode.py ...` instead.
+
 ## Scan
 
 Open the scanner on the phone and tap **Start camera**. Hold the phone so the
-slideshow fills most of the picture. The bar fills as codes come in; any
+slideshow fills most of the picture. Phones with several back cameras get a
+**Camera** menu (main, ultra-wide, telephoto), and a **Zoom** slider if the
+camera supports it. The main camera is usually the best for QR codes; the
+choice is remembered. The bar fills as codes come in; any
 pages, in any order, and missed frames don't matter. When it's complete,
 enter the password if there is one, then **Save**, **Share** or **Copy text**.
 
@@ -79,7 +92,7 @@ Screen" installs the scanner like an app.
 ## Tests
 
 ```
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"      # or: pip install -r requirements-dev.txt
 pytest
 ```
 

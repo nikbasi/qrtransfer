@@ -3,6 +3,7 @@ import { Assembler, WrongPassword, isEncrypted, unpack } from "./format.js";
 const $ = (id) => document.getElementById(id);
 const video = $("video"), viewport = $("viewport"), bar = $("bar"), statusEl = $("status");
 const startBtn = $("start"), photosInput = $("photos");
+const cameraRow = $("camera-row"), cameraSel = $("camera"), zoomRow = $("zoom-row"), zoomInput = $("zoom");
 
 const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
 const pending = new Map();
@@ -70,26 +71,79 @@ function feed(codes) {
 
 // ------------------------------------------------------------------ camera
 
-async function startCamera() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    setStatus("Camera not available here. The page must be opened over https.", true);
-    return;
-  }
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-    });
-  } catch (e) {
-    setStatus(`Camera blocked: ${e.message}`, true);
-    return;
-  }
+const savedCamera = () => { try { return localStorage.getItem("camera"); } catch { return null; } };
+const saveCamera = (id) => { try { localStorage.setItem("camera", id); } catch { /* private mode */ } };
+
+/** Open a specific camera, or the default back camera when no id is given. */
+function openStream(deviceId) {
+  const size = { width: { ideal: 1920 }, height: { ideal: 1080 } };
+  return navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: deviceId ? { ...size, deviceId: { exact: deviceId } } : { ...size, facingMode: { ideal: "environment" } },
+  });
+}
+
+async function attach(newStream) {
+  stream = newStream;
   const track = stream.getVideoTracks()[0];
   try {
     await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
   } catch { /* not supported everywhere */ }
   video.srcObject = stream;
   await video.play().catch(() => {});
+  setupZoom(track);
+  await listCameras(track.getSettings().deviceId);
+}
+
+/** Phones often have several back cameras (main, ultra-wide, telephoto). Labels are only visible after permission. */
+async function listCameras(currentId) {
+  const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+  cameraSel.replaceChildren(...cams.map((d, i) => new Option(d.label || `Camera ${i + 1}`, d.deviceId)));
+  if (currentId) cameraSel.value = currentId;
+  cameraRow.hidden = cams.length < 2;
+}
+
+function setupZoom(track) {
+  const zoom = track.getCapabilities?.().zoom;
+  zoomRow.hidden = !zoom;
+  if (!zoom) return;
+  zoomInput.min = zoom.min;
+  zoomInput.max = zoom.max;
+  zoomInput.step = zoom.step || 0.1;
+  zoomInput.value = track.getSettings().zoom ?? zoom.min;
+}
+
+cameraSel.onchange = async () => {
+  const id = cameraSel.value;
+  // phones can't run two cameras at once: release the current one first
+  stream?.getTracks().forEach((t) => t.stop());
+  try {
+    await attach(await openStream(id));
+    saveCamera(id);
+  } catch (e) {
+    setStatus(`Could not switch camera: ${e.message}`, true);
+    await attach(await openStream(null)).catch(() => {});
+  }
+};
+
+zoomInput.oninput = () => {
+  stream?.getVideoTracks()[0]
+    .applyConstraints({ advanced: [{ zoom: Number(zoomInput.value) }] })
+    .catch(() => {});
+};
+
+async function startCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus("Camera not available here. The page must be opened over https.", true);
+    return;
+  }
+  try {
+    // the saved camera may be unplugged or renamed: fall back to the default one
+    await attach(await openStream(savedCamera()).catch(() => openStream(null)));
+  } catch (e) {
+    setStatus(`Camera blocked: ${e.message}`, true);
+    return;
+  }
   viewport.classList.add("live");
   startBtn.textContent = "Stop camera";
   scanning = true;
@@ -104,6 +158,7 @@ function stopCamera() {
   stream?.getTracks().forEach((t) => t.stop());
   stream = null;
   video.srcObject = null;
+  cameraRow.hidden = zoomRow.hidden = true;
   viewport.classList.remove("live");
   startBtn.textContent = "Start camera";
 }

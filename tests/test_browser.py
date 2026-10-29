@@ -87,3 +87,15 @@ def test_wrong_password_then_right(tmp_path, server):
     Image.fromarray(fake_shot(res.pages[0], 7)).save(p, quality=85)
     out = browser({"url": server, "photos": [str(p)], "password": "wrong", "timeoutMs": 20000})
     assert "password rejected" in out["error"]  # the dialog came back after a wrong password
+
+
+def test_camera_picker_switches_and_keeps_scanning(tmp_path, server):
+    data = random.Random(11).randbytes(6000)  # incompressible, so scanning outlasts the picker check
+    res = qrencode.encode(data, "cam.bin", qrencode.Layout(**qrencode.PRESETS["live"]))
+    video = tmp_path / "cam.mjpeg"
+    write_mjpeg(video, res.pages)
+    out = browser({"url": server, "video": str(video), "switchCamera": True})
+    assert out.get("error") is None, out
+    assert out["cameras"] == ["Back Camera", "Back Ultra Wide Camera"]
+    assert out["openedDevices"] == [None, "back-ultra"]  # default back camera first, then the one picked
+    assert out["sha256"] == hashlib.sha256(data).hexdigest()

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qrtransfer"
+version = "0.1.0"
+description = "Send files to a phone through a slideshow of QR codes (encoder)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "segno>=1.6",
+    "pillow>=10.1",
+    "numpy",
+    "cryptography",
+    "zstandard",
+]
+
+[project.optional-dependencies]
+# desktop decoder (qrdecode.py) and the test suite; not needed to encode
+dev = ["zxing-cpp>=2.2", "opencv-python-headless", "pytest"]
+
+[project.scripts]
+qrtransfer = "qrencode:main"
+
+[tool.setuptools]
+py-modules = ["qrencode"]  # the encoder only: web/, deploy/, tests/ and qrdecode.py are not installed
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

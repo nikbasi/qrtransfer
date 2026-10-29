@@ -1,5 +1,6 @@
 // Drives web/ in headless Chromium. Usage: node browser_scan.mjs '<json args>'
-// args: {url, video?: mjpeg path (fake camera), photos?: [paths], password?, timeoutMs?}
+// args: {url, video?: mjpeg path (fake camera), switchCamera?: pretend the phone has two back cameras and
+//        pick the 2nd one after starting, photos?: [paths], password?, timeoutMs?}
 // Prints {name, sha256, meta, status, errors} as JSON.
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -19,6 +20,23 @@ if (args.video) launchArgs.push("--use-fake-device-for-media-stream", `--use-fil
 const browser = await playwright.chromium.launch({ args: launchArgs });
 const context = await browser.newContext({ acceptDownloads: true, permissions: ["camera"] });
 const page = await context.newPage();
+if (args.switchCamera) {
+  // Chromium's file-fed fake camera is a single device, so present two and record which one gets opened.
+  await page.addInitScript(() => {
+    const md = navigator.mediaDevices;
+    const realGum = md.getUserMedia.bind(md);
+    window.__gumDeviceIds = [];
+    md.enumerateDevices = async () => [
+      { kind: "videoinput", deviceId: "back-main", label: "Back Camera" },
+      { kind: "videoinput", deviceId: "back-ultra", label: "Back Ultra Wide Camera" },
+    ];
+    md.getUserMedia = (c) => {
+      const { deviceId, ...rest } = c.video || {};
+      window.__gumDeviceIds.push(deviceId?.exact ?? null);
+      return realGum({ ...c, video: rest });
+    };
+  });
+}
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
 page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
@@ -26,8 +44,18 @@ page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 const out = { errors };
 try {
   await page.goto(args.url);
-  if (args.video) await page.click("#start");
-  else await page.setInputFiles("#photos", args.photos);
+  if (args.video) {
+    await page.click("#start");
+    if (args.switchCamera) {
+      await page.waitForSelector("#camera-row:not([hidden])", { timeout: 15000 });
+      out.cameras = await page.$$eval("#camera option", (o) => o.map((x) => x.textContent));
+      await page.selectOption("#camera", { index: 1 });
+      await page.waitForFunction(() => document.getElementById("video").videoWidth > 0);
+      out.openedDevices = await page.evaluate(() => window.__gumDeviceIds);
+    }
+  } else {
+    await page.setInputFiles("#photos", args.photos);
+  }
 
   const deadline = Date.now() + (args.timeoutMs ?? 120000);
   let passwordTries = 0;
@@ -46,7 +74,7 @@ try {
   const [download] = await Promise.all([page.waitForEvent("download"), page.click("#r-save")]);
   out.sha256 = createHash("sha256").update(readFileSync(await download.path())).digest("hex");
 } catch (e) {
-  out.error = String(e);
+  out.error = String(e) + (e.stack ? "\n" + e.stack.split("\n").slice(1, 4).join("\n") : "");
 }
 out.status = await page.textContent("#status").catch(() => null);
 console.log(JSON.stringify(out));

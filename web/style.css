@@ -46,6 +46,15 @@ header h1 { margin: 0; font-size: 1.4rem; }
 }
 .viewport.live .placeholder { display: none; }
 
+.row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.row label { flex: none; width: 4.5em; color: var(--muted); }
+.row select, .row input[type=range] { flex: 1; min-width: 0; }
+select {
+  min-height: 44px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); color: var(--text); font: inherit;
+}
+
 .progress { height: 8px; margin-top: 14px; background: var(--surface); border-radius: 4px; overflow: hidden; }
 .bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 .bar.done { background: var(--ok); }
