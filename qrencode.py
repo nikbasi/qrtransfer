@@ -13,7 +13,7 @@ colour and speed while you scan, without losing progress.
 Add -o FOLDER to save viewer.html (and --png page images) instead.
 Decode with the web scanner (web/) or qrdecode.py. Format: FORMAT.md.
 
-Requires: pip install segno pillow numpy cryptography zstandard
+Requires: pip install segno numpy cryptography zstandard   (and pillow, only for --png)
 """
 import argparse
 import base64
@@ -37,7 +37,6 @@ from pathlib import Path
 
 import numpy as np
 import segno
-from PIL import Image, ImageDraw, ImageFont
 
 try:
     import zstandard
@@ -196,7 +195,17 @@ def _modules(data: bytes, version: int, ecc: str) -> np.ndarray:
     return np.pad(_matrix(data, version, ecc), QUIET, constant_values=False)
 
 
-def _render_slot(payloads: list[bytes], layout: Layout, module_px: int) -> Image.Image:
+def _pil():
+    """Pillow is only needed for --png page images, so it is imported on first use."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        raise SystemExit("--png needs Pillow: pip install pillow") from None
+    return Image, ImageDraw, ImageFont
+
+
+def _render_slot(payloads: list[bytes], layout: Layout, module_px: int):
+    Image = _pil()[0]
     layers = [_modules(p, layout.version, layout.ecc) for p in payloads]
     while layout.color and len(layers) < 3:  # partly filled last slot: missing layers stay light
         layers.append(np.zeros_like(layers[0]))
@@ -209,6 +218,7 @@ def _render_slot(payloads: list[bytes], layout: Layout, module_px: int) -> Image
 
 
 def _font(size: int):
+    ImageFont = _pil()[2]
     try:
         return ImageFont.load_default(size=size)
     except TypeError:  # Pillow < 10.1
@@ -262,6 +272,7 @@ class EncodeResult:
 
 
 def render_pages(pk: Packets, layout: Layout, encrypted: bool = False) -> list:
+    Image, ImageDraw, _ = _pil()
     qr_modules = 17 + 4 * layout.version + 2 * QUIET
     caption_h = int(layout.height * 0.045)
     cell_w = layout.width // layout.cols
@@ -596,6 +607,8 @@ def main(argv=None, on_ready=None, stop_event=None):
     a = p.parse_args(argv)
     if a.png and not a.out:
         p.error("--png writes files, so it needs -o FOLDER")
+    if a.png:
+        _pil()  # fail now, not after the encoding
 
     if a.file == "-":
         data, name = sys.stdin.buffer.read(), a.name or "message.txt"

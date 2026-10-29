@@ -15,7 +15,23 @@ you get the original file back, bit for bit.
 
 ## Encode
 
-Install only the encoder (5 small packages; nothing from the website, the desktop decoder or the tests):
+### The easy way: the guided launcher
+
+Double-click **`run.bat`** (Windows) or **`run.command`** (macOS; the first time,
+right-click > Open), or run `python run.py` (Linux or any terminal). It asks you to
+choose a file (or type a short message), whether to protect it with a password,
+and how many codes per page to start with, then opens the slideshow. If
+a package is missing it offers to install it. If no file dialog is available
+(for example Python without Tk), type the path or drag the file into the window.
+
+The launcher is just a front end for the command below, so everything in
+this README about memory-only mode applies to it. One caveat: Windows may add a file
+chosen in a file dialog to its "recent files" list; to avoid that, cancel the dialog
+and drag the file into the window instead.
+
+### The command line
+
+Install only the encoder (4 small packages; nothing from the website, the desktop decoder, the tests or Pillow):
 
 ```
 pip install "git+https://github.com/nikbasi/qrtransfer"     # or: pipx install "git+https://..."
@@ -86,6 +102,7 @@ that misses some.
 
 `qrencode.py` is also a single self-contained script: copy it anywhere, run
 `pip install -r requirements.txt`, and use `python qrencode.py ...` instead.
+Pillow is needed only for `--png` (`pip install pillow`, or `pip install "qrtransfer[png]"`).
 
 ## Scan
 

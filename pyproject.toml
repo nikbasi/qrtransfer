@@ -10,15 +10,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "segno>=1.6",
-    "pillow>=10.1",
     "numpy",
     "cryptography",
     "zstandard",
 ]
 
 [project.optional-dependencies]
+png = ["pillow>=10.1"]  # only for --png page images
 # desktop decoder (qrdecode.py) and the test suite; not needed to encode
-dev = ["zxing-cpp>=2.2", "opencv-python-headless", "pytest"]
+dev = ["pillow>=10.1", "zxing-cpp>=2.2", "opencv-python-headless", "pytest"]
 
 [project.scripts]
 qrtransfer = "qrencode:main"

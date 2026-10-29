@@ -1,5 +1,6 @@
 # desktop decoder (qrdecode.py) and tests
 -r requirements.txt
+pillow>=10.1
 zxing-cpp>=2.2
 opencv-python-headless
 pytest

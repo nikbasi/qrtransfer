@@ -1,6 +1,6 @@
 # encoder (qrencode.py)
 segno>=1.6
-pillow>=10.1
 numpy
 cryptography
 zstandard
+# optional, only for --png page images: pip install pillow
