@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Nothing leaves the phone: no third-party requests, no form posts; the page only loads its own files. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; img-src 'self' blob: data:; style-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#101418">
+<title>QR Scan</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<main>
+  <header>
+    <h1>QR Scan</h1>
+    <p class="sub">Decoded on this phone. Nothing is uploaded.</p>
+  </header>
+
+  <section id="scanner">
+    <div class="viewport" id="viewport">
+      <video id="video" playsinline muted autoplay></video>
+      <div class="placeholder" id="placeholder">Point the camera at the slideshow, or pick photos of the pages.</div>
+    </div>
+
+    <div class="progress" aria-hidden="true"><div class="bar" id="bar"></div></div>
+    <p class="status" id="status" role="status">Ready</p>
+
+    <div class="actions">
+      <button id="start" class="primary">Start camera</button>
+      <label class="button" for="photos">Scan photos</label>
+      <input id="photos" type="file" accept="image/*" multiple hidden>
+    </div>
+  </section>
+
+  <section id="result" hidden>
+    <h2 id="r-name"></h2>
+    <p class="meta" id="r-meta"></p>
+    <pre id="r-text" hidden></pre>
+    <div class="actions">
+      <button id="r-save" class="primary">Save</button>
+      <button id="r-share" hidden>Share</button>
+      <button id="r-copy" hidden>Copy text</button>
+      <button id="r-open" hidden>Open</button>
+      <button id="r-again">Scan another</button>
+    </div>
+  </section>
+</main>
+
+<dialog id="pw-dialog">
+  <form method="dialog" id="pw-form">
+    <h2>Password</h2>
+    <p>This file is encrypted.</p>
+    <input id="pw-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+    <p class="error" id="pw-error" hidden>Wrong password, try again.</p>
+    <div class="actions">
+      <button type="submit" class="primary" id="pw-ok">Unlock</button>
+      <button type="button" id="pw-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

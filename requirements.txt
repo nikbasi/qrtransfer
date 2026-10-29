@@ -1,7 +1,6 @@
+# encoder (qrencode.py)
 segno>=1.6
-zxing-cpp>=2.2
-numpy
 pillow>=10.1
+numpy
+cryptography
 zstandard
-opencv-python-headless
-pytest

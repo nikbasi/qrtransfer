@@ -1,0 +1,5 @@
+# desktop decoder (qrdecode.py) and tests
+-r requirements.txt
+zxing-cpp>=2.2
+opencv-python-headless
+pytest

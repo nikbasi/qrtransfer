@@ -1,67 +1,95 @@
 # qrtransfer
 
-Send a file through photos of a screen. The file is compressed, cut into
-blocks, protected with a fountain code and drawn as pages of QR codes.
-Photograph the pages (or film a slideshow of them) and decode the photos to
-get the exact original file back.
+Send a file from a computer to a phone using only the screen and the camera.
+`qrencode.py` turns the file into a slideshow of QR codes. Open the web
+scanner on the phone and point it at the screen; once enough codes are read,
+you get the original file back, bit for bit.
+
+- **Encoder:** `qrencode.py`, a single Python script. It can optionally
+  encrypt the file with a password (AES-256-GCM).
+- **Scanner:** `web/`, a static website (e.g. scan.basiletti.com). Everything
+  is decoded on the phone and nothing is uploaded. It works offline once
+  opened.
+- **Desktop decoder:** `qrdecode.py`. Decodes photos or videos on a computer;
+  the tests also use it as a reference.
+
+## Encode
 
 ```
 pip install -r requirements.txt
-python -m qrtransfer encode report.pdf           # -> report_qr/page_*.png + viewer.html
-python -m qrtransfer encode report.pdf --color   # 3x denser colour codes
-python -m qrtransfer decode IMG_*.jpg            # photos in any order
-python -m qrtransfer decode clip.mp4             # or a video of viewer.html
+
+python qrencode.py notes.txt --live            # for live scanning (recommended)
+python qrencode.py report.pdf --live -p        # same, asks for a password
+python qrencode.py report.pdf --color          # dense colour pages, for taking photos
+echo "wifi: hunter2" | python qrencode.py - -p # text from stdin
 ```
+
+This writes `<name>_qr/viewer.html`, a single self-contained file. Open it,
+click to go full screen, and scan. In the slideshow: space pauses, the arrow
+keys step through pages, and `+`/`-` change the speed.
+
+## Scan
+
+Open the scanner on the phone and tap **Start camera**. Hold the phone so the
+slideshow fills most of the picture. The bar fills as codes come in; any
+pages, in any order, and missed frames don't matter. When it's complete,
+enter the password if there is one, then **Save**, **Share** or **Copy text**.
+
+There is also **Scan photos**, for pictures taken earlier.
+
+### Which mode
+
+| Mode | Per frame/photo | Scan speed (desktop CPU) | Use for |
+|---|---|---|---|
+| `--live` (6 codes per page) | ~2.3 KB | ~10 frames/s → ~20 KB/s | live scanning: fastest overall |
+| `--live --color` | ~6.8 KB | ~1 frame/s → ~7 KB/s | when the screen is small or far away |
+| default (photo) | ~3.8 KB | – | photos |
+| `--color` (photo) | ~11 KB | 5–10 s per photo | photos: fewest shots |
+
+Phones are slower than this desktop benchmark; expect roughly a third of the
+speed. In colour mode each slot holds three QR codes, one per RGB channel.
+The scanner corrects for white balance, lighting and the camera's colour
+crosstalk, so no calibration is needed. Turn off night mode / blue-light
+filters on the displaying screen.
 
 ## How it works
 
-| Layer | What it does |
-|---|---|
-| `container.py` | Tries zlib, bz2, lzma and zstd and keeps the smallest. Stores the name, the size and a **SHA-256** of the original file |
-| `fountain.py` | Systematic random-linear fountain code over GF(2). Packets `0..k-1` are the data blocks; later packets are random XORs of the blocks. **Any ~k+2 distinct codes rebuild the file**, so missing or blurry codes don't matter as long as enough others were read |
-| `packet.py` | Each QR carries a 19-byte header (file id, length, block size, sequence number) plus a **CRC-32** |
-| `encode.py` | Lays out a grid of QR codes per page (default: 6 × version 20-M on 1920×1080). Writes `viewer.html`, a fullscreen slideshow |
-| `color.py` | With `--color`, stacks 3 QR codes per slot, one in each of R, G and B, so each module is one of 8 colors |
-| `decode.py` | Uses zxing-cpp to find every QR code in each photo or video frame, then solves for the blocks. Color photos are detected automatically |
+Compression (zstd or deflate) → optional encryption → a fountain code that
+splits the result into blocks plus repair blocks, so any ~k+2 of the codes
+rebuild the file → each block in a QR code with a CRC-32. The file's SHA-256
+(or the GCM tag) is checked at the end. The full spec is in
+[FORMAT.md](FORMAT.md).
 
-Integrity is checked at three levels: the Reed-Solomon code inside each QR,
-the CRC-32 on each packet, and the SHA-256 of the whole file. A decoded file
-is either bit-exact or rejected.
+## Deploy the scanner (scan.basiletti.com)
 
-## Color mode
+The camera only works over HTTPS. On the Oracle Cloud VM:
 
-Each slot holds three ordinary QR codes, one per RGB channel. Finder and
-timing patterns are dark in all three layers, so they show as black and the
-codes are located just like normal QR codes. To read a color photo, the
-decoder:
+1. **DNS:** add an `A` record `scan` → the VM's public IP.
+2. **nginx:** copy `deploy/nginx-scan.conf` into the sites folder, then run
+   `sudo nginx -t && sudo systemctl reload nginx`. Ports 80 and 443 are
+   already open if basiletti.com is served from this machine.
+3. **HTTPS:** `sudo certbot --nginx -d scan.basiletti.com`
+4. **Files:** `sudo mkdir -p /var/www/scan && sudo chown $USER /var/www/scan`,
+   then from your computer run `deploy/deploy.sh ubuntu@<vm-ip>`.
 
-1. normalises each channel against the local brightest and darkest pixels.
-   This cancels white balance, uneven lighting and screen brightness.
-2. undoes the camera's color mixing (each sensor channel also picks up some
-   of the neighbouring display colors). It tries a few typical strengths, so
-   no calibration chart is needed.
-3. thresholds each channel into a black-and-white QR image and decodes it
-   normally. Any misread is caught by the CRC.
+To update later, run `deploy/deploy.sh` again. It stamps the service worker
+so phones pick up the new version. On iPhone or Android, "Add to Home
+Screen" installs the scanner like an app.
 
-Tips for real screens: turn off night mode or blue-light filters (they shift
-the colors), set brightness high, and avoid glare.
+## Tests
 
-## Tuning
+```
+pip install -r requirements-dev.txt
+pytest
+```
 
-`--qr-version`, `--ecc`, `--cols` and `--rows` trade density against how easy
-the codes are to photograph. In simulated 12 MP photos (perspective, blur,
-uneven light, noise, JPEG):
+The tests cover:
+- round trips through simulated phone photos and 1080p video frames (tilt,
+  blur, colour crosstalk, uneven light, noise, JPEG);
+- the JS decoder against packets made by the Python encoder;
+- the real web page in headless Chromium, using a fake camera playing a
+  simulated recording of the slideshow (needs Node and Playwright).
 
-| Setting | Black & white | `--color` |
-|---|---|---|
-| v20-M, 3×2 (default) | ~3.8 KB | ~11 KB |
-| v20-M, 4×3 | ~7.5 KB | ~22 KB |
-| v30-L, 4×2 | ~13 KB | ~31 KB (some codes missed, covered by repair codes) |
-
-Real screens add moiré, so start with the default and go denser once that
-works. `--redundancy` (default 0.15) sets how many extra repair codes to add;
-raise it if you expect to miss whole pages.
-
-`pytest` runs the round-trip tests, including decoding simulated photos (black
-and white, and color with heavy color mixing) with one page never
-photographed.
+Third-party code bundled in `web/vendor/`:
+- zxing-wasm 3.1.6 (zxing-cpp, Apache-2.0)
+- fzstd 0.1.1 (MIT)
