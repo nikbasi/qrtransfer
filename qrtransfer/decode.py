@@ -5,37 +5,47 @@ import numpy as np
 import zxingcpp
 from PIL import Image, ImageOps
 
-from . import container
+from . import color, container
 from .fountain import Decoder
 from .packet import Packet
 
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 
 
+def _scan(img: np.ndarray, found: dict, binarizers=(zxingcpp.Binarizer.LocalAverage,)):
+    for binarizer in binarizers:
+        for r in zxingcpp.read_barcodes(img, formats=zxingcpp.BarcodeFormat.QRCode, binarizer=binarizer):
+            if r.valid:
+                found[r.bytes] = None
+
+
 def read_codes(img: np.ndarray) -> list[bytes]:
-    """All QR payloads found in a grayscale image. Tries a few variants because
-    phone photos vary a lot in sharpness, size and lighting."""
+    """All QR payloads found in a grayscale or RGB image. Tries a few variants
+    because phone photos vary a lot in sharpness, size and lighting; colour
+    photos are instead split into their three QR layers."""
     found = {}
-    variants = [img]
-    h, w = img.shape
+    if img.ndim == 3 and color.is_colorful(img):
+        for layer in color.separate(img):
+            _scan(layer, found)
+        return list(found)
+    gray = np.asarray(Image.fromarray(img).convert("L")) if img.ndim == 3 else img
+    variants = [gray]
+    h, w = gray.shape
     if max(h, w) > 2500:
-        variants.append(np.asarray(Image.fromarray(img).reduce(2)))
-    variants.append(np.asarray(ImageOps.equalize(Image.fromarray(img))))
+        variants.append(np.asarray(Image.fromarray(gray).reduce(2)))
+    variants.append(np.asarray(ImageOps.equalize(Image.fromarray(gray))))
     for v in variants:
-        for binarizer in (zxingcpp.Binarizer.LocalAverage, zxingcpp.Binarizer.GlobalHistogram):
-            for r in zxingcpp.read_barcodes(v, formats=zxingcpp.BarcodeFormat.QRCode, binarizer=binarizer):
-                if r.valid:
-                    found[r.bytes] = None
+        _scan(v, found, (zxingcpp.Binarizer.LocalAverage, zxingcpp.Binarizer.GlobalHistogram))
     return list(found)
 
 
 def load_image(path: Path) -> np.ndarray:
     img = ImageOps.exif_transpose(Image.open(path))
-    return np.asarray(img.convert("L"))
+    return np.asarray(img.convert("RGB"))
 
 
 def iter_video_frames(path: Path, step: int = 3):
-    import cv2  # only needed for video input
+    import cv2
 
     cap = cv2.VideoCapture(str(path))
     i = 0
@@ -44,7 +54,7 @@ def iter_video_frames(path: Path, step: int = 3):
         if not ok:
             break
         if i % step == 0:
-            yield f"{path.name}#{i}", cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            yield f"{path.name}#{i}", cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         i += 1
     cap.release()
 

@@ -8,7 +8,7 @@ import numpy as np
 import segno
 from PIL import Image, ImageDraw, ImageFont
 
-from . import container, fountain
+from . import color, container, fountain
 from .packet import OVERHEAD, Packet
 
 QUIET = 4          # quiet-zone modules around each QR (the spec minimum)
@@ -36,10 +36,15 @@ class Layout:
     rows: int = 2
     version: int = 20
     ecc: str = "M"
+    color: bool = False  # 3 QR codes per slot, one per RGB channel
+
+    @property
+    def slots(self) -> int:
+        return self.cols * self.rows
 
     @property
     def per_page(self) -> int:
-        return self.cols * self.rows
+        return self.slots * (3 if self.color else 1)
 
 
 @dataclass
@@ -52,13 +57,20 @@ class EncodeResult:
     packets: int
 
 
-def _render_qr(data: bytes, version: int, ecc: str, module_px: int) -> Image.Image:
+def _modules(data: bytes, version: int, ecc: str) -> np.ndarray:
+    """Boolean module matrix (True = dark) including the quiet zone."""
     qr = segno.make(data, version=version, error=ecc, mode="byte", boost_error=False)
-    m = np.array(qr.matrix, dtype=bool)
-    m = np.pad(m, QUIET, constant_values=False)
-    img = np.where(m, 0, 255).astype(np.uint8)
+    return np.pad(np.array(qr.matrix, dtype=bool), QUIET, constant_values=False)
+
+
+def _render_slot(payloads: list[bytes], layout: Layout, module_px: int) -> Image.Image:
+    layers = [_modules(p, layout.version, layout.ecc) for p in payloads]
+    if layout.color:
+        img, mode = color.compose(layers), "RGB"
+    else:
+        img, mode = np.where(layers[0], 0, 255).astype(np.uint8), "L"
     img = img.repeat(module_px, axis=0).repeat(module_px, axis=1)
-    return Image.fromarray(img, "L")
+    return Image.fromarray(img, mode)
 
 
 def _font(size: int):
@@ -96,16 +108,17 @@ def encode(data: bytes, name: str, layout: Layout, redundancy: float = 0.15) -> 
     n_pages = total // layout.per_page
     pages = []
     for p in range(n_pages):
-        page = Image.new("L", (layout.width, layout.height), 255)
+        page = Image.new("RGB" if layout.color else "L", (layout.width, layout.height), "white")
         chunk = packets[p * layout.per_page:(p + 1) * layout.per_page]
-        for i, raw in enumerate(chunk):
-            qr = _render_qr(raw, layout.version, layout.ecc, module_px)
+        per_slot = layout.per_page // layout.slots
+        for i in range(layout.slots):
+            qr = _render_slot(chunk[i * per_slot:(i + 1) * per_slot], layout, module_px)
             r, c = divmod(i, layout.cols)
             x = c * cell_w + (cell_w - qr.width) // 2
             y = caption_h + r * cell_h + (cell_h - qr.height) // 2
             page.paste(qr, (x, y))
         caption = f"{name}  |  page {p + 1}/{n_pages}  |  any {k}+ codes rebuild the file  |  id {file_id.hex()}"
-        ImageDraw.Draw(page).text((layout.width // 2, caption_h // 2), caption, fill=0, font=font, anchor="mm")
+        ImageDraw.Draw(page).text((layout.width // 2, caption_h // 2), caption, fill="black", font=font, anchor="mm")
         pages.append(page)
 
     return EncodeResult(pages, method, len(data), len(stream), k, total)

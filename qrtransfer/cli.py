@@ -8,7 +8,7 @@ from .encode import Layout, encode, write_viewer
 
 def cmd_encode(a):
     src = Path(a.file)
-    layout = Layout(a.width, a.height, a.cols, a.rows, a.qr_version, a.ecc)
+    layout = Layout(a.width, a.height, a.cols, a.rows, a.qr_version, a.ecc, a.color)
     res = encode(src.read_bytes(), src.name, layout, a.redundancy)
     out = Path(a.out or f"{src.stem}_qr")
     out.mkdir(parents=True, exist_ok=True)
@@ -52,6 +52,7 @@ def main(argv=None):
     e.add_argument("--rows", type=int, default=2)
     e.add_argument("--qr-version", type=int, default=20, help="1-40; higher = denser codes, harder to photograph")
     e.add_argument("--ecc", default="M", choices="LMQH", help="QR error-correction level")
+    e.add_argument("--color", action="store_true", help="stack 3 QR codes per slot in the R/G/B channels (3x data)")
     e.add_argument("--redundancy", type=float, default=0.15, help="extra repair codes as a fraction of data codes")
     e.add_argument("--interval", type=int, default=600, help="slideshow ms per page")
     e.set_defaults(func=cmd_encode)

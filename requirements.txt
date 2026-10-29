@@ -3,5 +3,5 @@ zxing-cpp>=2.2
 numpy
 pillow>=10.1
 zstandard
-opencv-python-headless  # only for video input and the photo simulation in tests
+opencv-python-headless
 pytest
