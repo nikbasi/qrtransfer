@@ -54,7 +54,7 @@ def test_nothing_is_written_while_encoding_and_serving(tmp_path):
     page = json.loads(r.stdout.strip().splitlines()[-1])
     assert page["status"] == 200 and page["errors"] == [], page
     assert "no-store" in page["cache"]
-    assert "codes/page" in page["info"]
+    assert "loop 1" in page["info"]
 
     proc.wait(timeout=60)  # --timeout ends it by itself
     assert "nothing was written to disk" in proc.stdout.read()

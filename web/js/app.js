@@ -39,6 +39,31 @@ function grab(source, srcW, srcH, maxSide) {
 let asm = new Assembler();
 let stream = null, scanning = false, frames = 0, t0 = 0, finishing = false;
 
+// Transfer speed: new, independent codes per second over the last few seconds (duplicates and misreads don't count).
+const WINDOW_MS = 6000;
+let session = null;      // {id, first, samples: [[time, rank], ...]} for the file being received
+let activeId = null;     // file the latest valid codes belonged to
+let lastTransfer = null; // {elapsed, kbs} of the live scan that just finished, for the result page
+
+function track(id, dec) {
+  const now = performance.now();
+  if (!session || session.id !== id) session = { id, first: now, samples: [] };
+  session.samples.push([now, dec.rank]);
+  while (session.samples.length > 2 && now - session.samples[0][0] > WINDOW_MS) session.samples.shift();
+}
+
+function codesPerSecond() {
+  const s = session?.samples;
+  if (!s || s.length < 2) return 0;
+  const [ta, ra] = s[0], [tb, rb] = s[s.length - 1];
+  return tb - ta < 800 ? 0 : (rb - ra) / ((tb - ta) / 1000);
+}
+
+function fmtDuration(sec) {
+  sec = Math.round(sec);
+  return sec < 90 ? `${sec} s` : `${Math.floor(sec / 60)} min ${String(sec % 60).padStart(2, "0")} s`;
+}
+
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
   statusEl.classList.toggle("err", isError);
@@ -51,22 +76,46 @@ function report(fileIdHex) {
     return;
   }
   bar.style.width = `${(100 * dec.rank) / dec.k}%`;
+  if (!scanning) {
+    setStatus(`${dec.rank} / ${dec.k} codes. Add more photos (any pages).`);
+    return;
+  }
   const fps = frames / Math.max(0.001, (performance.now() - t0) / 1000);
-  setStatus(scanning
-    ? `${dec.rank} / ${dec.k} codes · ${fps.toFixed(1)} frames/s`
-    : `${dec.rank} / ${dec.k} codes. Add more photos (any pages).`);
+  const rate = codesPerSecond();
+  const left = rate > 0 ? ` · ~${fmtDuration((dec.k - dec.rank) / rate)} left` : "";
+  setStatus(`${dec.rank} / ${dec.k} codes · ${rate.toFixed(1)} codes/s · ${(rate * dec.blockSize / 1000).toFixed(1)} KB/s`
+    + `${left} · ${fps.toFixed(1)} fps`);
+}
+
+/** Update progress and speed; called for every camera frame so a stall shows up as a falling rate. */
+function refresh() {
+  const dec = activeId && asm.files.get(activeId);
+  if (!dec) return;
+  if (scanning) track(activeId, dec);
+  report(activeId);
 }
 
 function feed(codes) {
-  if (!codes.length) return null;
+  if (!codes.length) {
+    refresh();
+    return null;
+  }
   const { fresh, fileIdHex } = asm.feed(codes);
   if (fresh) {
     viewport.classList.add("flash");
     setTimeout(() => viewport.classList.remove("flash"), 120);
   }
-  report(fileIdHex);
+  if (fileIdHex) activeId = fileIdHex;
+  refresh();
   const dec = fileIdHex && asm.files.get(fileIdHex);
   return dec?.complete ? dec : null;
+}
+
+/** Time from the first valid code to the last, and the average speed over it. */
+function summarize(dec) {
+  if (!session) return null;
+  const elapsed = (performance.now() - session.first) / 1000;
+  return { elapsed, kbs: (dec.k * dec.blockSize) / 1000 / Math.max(elapsed, 0.001) };
 }
 
 // ------------------------------------------------------------------ camera
@@ -175,6 +224,7 @@ async function loop() {
     if (!scanning) break;
     const done = feed(res.codes);
     if (done) {
+      lastTransfer = summarize(done);
       stopCamera();
       await finish(done);
     }
@@ -196,7 +246,10 @@ async function scanPhotos(files) {
     const res = await detect(grab(bmp, bmp.width, bmp.height, 3000), "photo");
     bmp.close();
     const done = feed(res.codes);
-    if (done) return finish(done);
+    if (done) {
+      lastTransfer = null; // photos have no meaningful transfer time
+      return finish(done);
+    }
     if (!res.codes.length) setStatus(`No codes found in photo ${i + 1}. Try a sharper, closer shot.`, true);
   }
 }
@@ -285,7 +338,8 @@ function showResult({ name, data }) {
   $("scanner").hidden = true;
   $("result").hidden = false;
   $("r-name").textContent = name;
-  $("r-meta").textContent = `${formatSize(data.length)} · verified`;
+  $("r-meta").textContent = `${formatSize(data.length)} · verified`
+    + (lastTransfer ? ` · received in ${fmtDuration(lastTransfer.elapsed)} · ${lastTransfer.kbs.toFixed(1)} KB/s average` : "");
   $("r-text").hidden = text === null;
   $("r-text").textContent = text ?? "";
 
@@ -310,6 +364,7 @@ function showResult({ name, data }) {
 
 function reset() {
   asm = new Assembler();
+  session = activeId = lastTransfer = null;
   bar.style.width = "0";
   bar.classList.remove("done");
   $("result").hidden = true;

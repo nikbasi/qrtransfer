@@ -4,6 +4,7 @@ import functools
 import hashlib
 import http.server
 import json
+import re
 import random
 import shutil
 import subprocess
@@ -75,6 +76,7 @@ def test_live_camera_scan(tmp_path, server, color, password):
     assert out.get("error") is None, out
     assert out["name"] == "notes.txt"
     assert out["sha256"] == hashlib.sha256(data).hexdigest()
+    assert re.search(r"received in .*KB/s average", out["meta"]), out["meta"]  # speed readout for live scans
 
 
 def test_photo_upload_color(tmp_path, server):
@@ -88,6 +90,7 @@ def test_photo_upload_color(tmp_path, server):
     out = browser({"url": server, "photos": photos, "password": "pw"})
     assert out.get("error") is None, out
     assert out["sha256"] == hashlib.sha256(data).hexdigest()
+    assert "received in" not in out["meta"]  # photos have no transfer time
 
 
 def test_wrong_password_then_right(tmp_path, server):

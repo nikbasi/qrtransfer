@@ -16,12 +16,12 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node not i
 ROOT = __import__("pathlib").Path(__file__).resolve().parent.parent
 
 
-def render(tmp_path, html, hashes, width=1920, height=1080):
+def render(tmp_path, html, hashes, width=1920, height=1080, evals=None):
     f = tmp_path / "viewer.html"
     f.write_text(html)
     out = tmp_path / "shots"
     out.mkdir(exist_ok=True)
-    args = {"file": str(f), "outDir": str(out), "width": width, "height": height, "shots": [{"hash": h} for h in hashes]}
+    args = {"file": str(f), "outDir": str(out), "width": width, "height": height, "shots": [{"hash": h, "eval": (evals or [None] * len(hashes))[i]} for i, h in enumerate(hashes)]}
     r = subprocess.run(["node", str(ROOT / "tests/js/render_viewer.mjs"), json.dumps(args)], capture_output=True, text=True)
     assert r.stdout.strip(), r.stderr
     res = json.loads(r.stdout.strip().splitlines()[-1])
@@ -89,3 +89,23 @@ def test_slideshow_filmed_by_phone_is_read_by_scanner(tmp_path, color):
         out = browser({"url": url, "video": str(video)})
     assert out.get("error") is None, out
     assert out["sha256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_loop_progress_is_shown(tmp_path, pk):
+    N = pk.total
+    strip = "document.querySelector('#strip div').style.width"
+    imgs, info = render(tmp_path, viewer_html(pk), [
+        f"layout=6&color=0&paused=1&hide=1&at={N // 2}",
+        f"layout=6&color=0&paused=1&at={N - 6}",
+        "layout=6&color=0&paused=1&at=0",
+    ], evals=[
+        strip,  # half way through, with the bar hidden: the strip is still there
+        "(() => { const v = window.qrViewer; v.step(1); return {loops: v.st.loops, cursor: v.st.cursor, "
+        "text: document.getElementById('info').textContent}; })()",
+        "(() => { const v = window.qrViewer; v.step(1); v.step(1); document.getElementById('restart').click(); "
+        "return {loops: v.st.loops, cursor: v.st.cursor}; })()",
+    ])
+    assert "loop 1" in info[0]["text"] and "(50%)" in info[0]["text"]
+    assert info[0]["eval"] == "50%"
+    assert info[1]["eval"]["loops"] == 1 and info[1]["eval"]["cursor"] == 0 and "loop 2" in info[1]["eval"]["text"]
+    assert info[2]["eval"] == {"loops": 0, "cursor": 0}

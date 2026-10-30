@@ -18,7 +18,9 @@ for (const [i, shot] of args.shots.entries()) {
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   await page.goto(pathToFileURL(args.file).href + "#" + shot.hash);
   await page.waitForFunction(() => window.qrViewer);
-  info.push(await page.evaluate(() => ({ P: window.qrViewer.perPage(), N: window.qrViewer.N, K: window.qrViewer.K, at: window.qrViewer.st.cursor, text: document.getElementById("info").textContent })));
+  const entry = await page.evaluate(() => ({ P: window.qrViewer.perPage(), N: window.qrViewer.N, K: window.qrViewer.K, at: window.qrViewer.st.cursor, text: document.getElementById("info").textContent }));
+  if (shot.eval) entry.eval = await page.evaluate(shot.eval);  // optional script run after load
+  info.push(entry);
   await page.locator("#c").screenshot({ path: `${args.outDir}/shot_${i}.png` });
   await page.close();
 }

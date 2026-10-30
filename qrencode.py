@@ -330,9 +330,11 @@ html,body{margin:0;height:100%;background:#fff;color:#111;font:14px system-ui,-a
 #bar button.on{background:#1b6ef3;color:#fff;border-color:#1b6ef3}
 #speed{min-width:4.5em;text-align:center}
 #info{margin-left:auto;padding-left:10px;color:#445}
-canvas{position:fixed;left:0;top:48px;width:100vw;height:calc(100vh - 48px);image-rendering:pixelated;display:block}
+canvas{position:fixed;left:0;top:48px;width:100vw;height:calc(100vh - 54px);image-rendering:pixelated;display:block}
+#strip{position:fixed;left:0;right:0;bottom:0;height:6px;background:#dde3e8}
+#strip div{height:100%;width:0;background:#1b6ef3}
 body.hide #bar{display:none}
-body.hide canvas{top:0;height:100vh}
+body.hide canvas{top:0;height:calc(100vh - 6px)}
 </style></head><body>
 <div id="bar">
  <select id="layout" aria-label="codes per page">
@@ -341,10 +343,12 @@ body.hide canvas{top:0;height:100vh}
  <button id="color" title="3 codes in every spot (red, green, blue): 3x the data per page, slower to decode">Color</button>
  <button id="slower" aria-label="slower">&minus;</button><span id="speed"></span><button id="faster" aria-label="faster">+</button>
  <button id="prev" aria-label="previous page">&#9664;</button><button id="play">Pause</button><button id="next" aria-label="next page">&#9654;</button>
+ <button id="restart" title="start over: back to the first page, loop counter and timer reset">Restart</button><span id="elapsed">0:00</span>
  <button id="full">Full screen</button><button id="hide">Hide bar</button>
  <span id="info"></span>
 </div>
 <canvas id="c"></canvas>
+<div id="strip"><div></div></div>
 <script>
 (() => {
 const V = __V__, N = __N__, BLOCK = __BLOCK__, K = __K__;
@@ -355,7 +359,8 @@ for (let i = 0; i < bin.length; i++) M[i] = bin.charCodeAt(i);
 const LAYOUTS = { 1: [1, 1], 2: [2, 1], 6: [3, 2], 12: [4, 3] };
 const $ = (id) => document.getElementById(id);
 const canvas = $("c"), ctx = canvas.getContext("2d");
-const st = { layout: __LAYOUT__, color: __COLOR__, speed: __SPEED__, playing: true, cursor: 0, hide: false };
+const st = { layout: __LAYOUT__, color: __COLOR__, speed: __SPEED__, playing: true, cursor: 0, loops: 0, hide: false };
+let startedAt = performance.now();
 
 const q = new URLSearchParams(location.hash.slice(1));
 if (LAYOUTS[q.get("layout")]) st.layout = +q.get("layout");
@@ -409,8 +414,10 @@ function ui() {
   $("color").classList.toggle("on", st.color);
   $("play").textContent = st.playing ? "Pause" : "Play";
   $("speed").textContent = st.speed.toFixed(st.speed < 10 ? 2 : 1).replace(/\.?0+$/, "") + " pg/s";
-  $("info").textContent = P + " codes/page · " + (P * BLOCK / 1000).toFixed(1) + " KB/page · loop "
-    + (Math.ceil(N / P) / st.speed).toFixed(1) + " s · needs " + K + " of " + N;
+  const pct = Math.round(100 * st.cursor / N), pages = Math.ceil(N / P), page = Math.min(pages, Math.floor(st.cursor / P) + 1);
+  $("info").textContent = "loop " + (st.loops + 1) + " · page " + page + "/" + pages + " (" + pct + "%) · "
+    + (P * BLOCK / 1000).toFixed(1) + " KB/page · " + (pages / st.speed).toFixed(0) + " s/loop · need " + K + " of " + N;
+  document.querySelector("#strip div").style.width = (100 * st.cursor / N) + "%";
   document.body.classList.toggle("hide", st.hide);
   const p = new URLSearchParams({ layout: st.layout, color: +st.color, speed: st.speed });
   if (!st.playing) p.set("paused", "1");
@@ -424,10 +431,23 @@ function schedule() {
   if (st.playing) timer = setTimeout(() => { step(1); schedule(); }, 1000 / st.speed);
 }
 function step(dir) {
-  const P = perPage();
-  st.cursor = ((st.cursor + dir * P) % N + N) % N;
+  const P = perPage(), old = st.cursor;
+  st.cursor = ((old + dir * P) % N + N) % N;
+  if (dir > 0 && st.cursor < old) st.loops++;                       // wrapped past the last page: next loop
+  else if (dir < 0 && st.cursor > old) st.loops = Math.max(0, st.loops - 1);
   draw();
 }
+function restart() {
+  st.cursor = 0;
+  st.loops = 0;
+  startedAt = performance.now();
+  draw();
+  schedule();
+}
+setInterval(() => {
+  const s = Math.floor((performance.now() - startedAt) / 1000);
+  $("elapsed").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}, 500);
 const change = (fn) => { fn(); draw(); schedule(); };
 const setSpeed = (f) => change(() => { st.speed = Math.min(20, Math.max(0.25, Math.round(st.speed * f * 100) / 100)); });
 const fullscreen = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.());
@@ -438,6 +458,7 @@ $("slower").onclick = () => setSpeed(0.8);
 $("faster").onclick = () => setSpeed(1.25);
 $("prev").onclick = () => { step(-1); schedule(); };
 $("next").onclick = () => { step(1); schedule(); };
+$("restart").onclick = restart;
 $("play").onclick = () => change(() => { st.playing = !st.playing; });
 $("full").onclick = fullscreen;
 $("hide").onclick = () => change(() => { st.hide = true; });

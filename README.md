@@ -57,6 +57,13 @@ top switches, while you scan and without losing progress:
 - **Color**: 3 codes in every spot, one per red/green/blue channel (key `c`)
 - **− / +**: speed in pages per second; **◀ ▶**, **Pause** to step (arrows, space)
 - **Hide bar** or a tap on the codes hides the controls (key `h`)
+- **Restart** goes back to the first page and resets the loop counter and the timer,
+  handy for timing a run
+
+The bar also shows where you are: the loop number, the page and the percentage of
+the loop (`loop 2 · page 120/291 (41%)`), how much data a page carries, and how
+long a loop takes. A strip along the bottom of the screen fills as the loop
+advances and stays visible when the bar is hidden.
 
 Switching is safe because every layout shows consecutive pieces of the same
 stream, so anything the phone already read still counts. The settings are kept
@@ -113,6 +120,16 @@ camera supports it. The main camera is usually the best for QR codes; the
 choice is remembered. The bar fills as codes come in; any
 pages, in any order, and missed frames don't matter. When it's complete,
 enter the password if there is one, then **Save**, **Share** or **Copy text**.
+
+While it scans, the status line shows the speed: new codes per second, the
+equivalent KB/s, an estimate of the time left, and the camera's frames per
+second (`212 / 2669 codes · 14.2 codes/s · 5.6 KB/s · ~3 min 02 s left · 8.1 fps`).
+When the file is complete the result shows the total time and the average speed
+(`received in 2 min 41 s · 6.5 KB/s average`). Use these numbers to compare
+settings: change one thing in the slideshow (layout, speed, `--ecc L`) and
+see whether the KB/s goes up. Codes the phone misses show up as a lower rate,
+and a rate that keeps falling means the slideshow is going faster than
+the phone can read.
 
 There is also **Scan photos**, for pictures taken earlier.
 
